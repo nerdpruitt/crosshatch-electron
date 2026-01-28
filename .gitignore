@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Electron build output
+dist/
+out/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
