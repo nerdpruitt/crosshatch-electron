@@ -42,6 +42,53 @@ float toonShade(float lum, float threshold) {
 }
 
 // ============================================
+// Edge Detection (Sobel)
+// ============================================
+
+// Sobel edge detection on luminance channel
+// Returns edge strength (0 = no edge, 1 = strong edge)
+float detectEdges(sampler2D tex, vec2 uv, vec2 texSize) {
+  // Calculate pixel size in UV space
+  vec2 pixelSize = 1.0 / texSize;
+  
+  // Sample 3x3 neighborhood
+  float tl = luminance(texture(tex, uv + vec2(-pixelSize.x,  pixelSize.y)).rgb);
+  float tm = luminance(texture(tex, uv + vec2(0.0,          pixelSize.y)).rgb);
+  float tr = luminance(texture(tex, uv + vec2( pixelSize.x,  pixelSize.y)).rgb);
+  
+  float ml = luminance(texture(tex, uv + vec2(-pixelSize.x, 0.0)).rgb);
+  float mr = luminance(texture(tex, uv + vec2( pixelSize.x, 0.0)).rgb);
+  
+  float bl = luminance(texture(tex, uv + vec2(-pixelSize.x, -pixelSize.y)).rgb);
+  float bm = luminance(texture(tex, uv + vec2(0.0,         -pixelSize.y)).rgb);
+  float br = luminance(texture(tex, uv + vec2( pixelSize.x, -pixelSize.y)).rgb);
+  
+  // Apply Sobel kernels
+  // Gx (horizontal):     Gy (vertical):
+  // [-1  0  +1]          [-1 -2 -1]
+  // [-2  0  +2]          [ 0  0  0]
+  // [-1  0  +1]          [+1 +2 +1]
+  
+  float gx = -tl + tr - 2.0*ml + 2.0*mr - bl + br;
+  float gy = -tl - 2.0*tm - tr + bl + 2.0*bm + br;
+  
+  // Calculate gradient magnitude
+  float edgeStrength = sqrt(gx*gx + gy*gy);
+  
+  // Normalize and apply moderate sensitivity for pen-sketch look
+  // Scale to reasonable range (tune this for desired edge strength)
+  return clamp(edgeStrength * 2.0, 0.0, 1.0);
+}
+
+// ============================================
+// Zone Classification (Comic Book Style)
+// ============================================
+
+// Zone thresholds - controlled by uniforms
+// u_toonThreshold controls the shadow/midtone boundary
+// u_finalThreshold controls the midtone/highlight boundary
+
+// ============================================
 // Main
 // ============================================
 
@@ -62,26 +109,58 @@ void main() {
   vec3 srcColor = texture(u_image, uv).rgb;
   float lum = luminance(srcColor);
 
-  // ========== Hatch Texture ==========
-  // Tile the hand-drawn texture across screen space
-  // Scale based on output size for consistent density
+  // ========== Edge Detection ==========
+  // Detect edges for bold comic-style outlines
+  float edgeStrength = detectEdges(u_image, uv, u_texSize);
+  
+  // Bold edge mask for comic contour lines (0.8 = strong outlines)
+  float edgeMask = 1.0 - (edgeStrength * 0.8);
+  // Hard threshold the edges for crisp lines
+  edgeMask = step(0.3, edgeMask);
+
+  // ========== Zone Classification ==========
+  // Define luminance zones for comic book style:
+  // - Highlights (bright): Pure white, no texture
+  // - Mid-tones: Apply hatching
+  // - Shadows (dark): Solid black
+  
+  float shadowThreshold = u_toonThreshold;      // ~0.3 default
+  float highlightThreshold = 1.0 - u_finalThreshold; // ~0.627 default
+  
+  // ========== Hatch Texture (for mid-tones only) ==========
   float tileScale = u_hatchScale * (u_outSize.y / 800.0);
   vec2 hatchUV = fragPx / u_outSize * tileScale;
+  
+  // Sample hatch texture
+  float hatchValue = luminance(texture(u_hatchTex, hatchUV).rgb);
+  
+  // ========== Zone-Based Rendering ==========
+  float result;
+  
+  if (lum < shadowThreshold) {
+    // SHADOWS: Solid black
+    result = 0.0;
+  } 
+  else if (lum > highlightThreshold) {
+    // HIGHLIGHTS: Pure white (clean, no texture)
+    result = 1.0;
+  } 
+  else {
+    // MID-TONES: Apply hatching
+    // Map luminance within mid-tone range to 0-1
+    float midTonePos = (lum - shadowThreshold) / (highlightThreshold - shadowThreshold);
+    
+    // Combine luminance position with hatch texture
+    // Darker mid-tones get more hatching, lighter get less
+    float hatchInfluence = hatchValue + midTonePos;
+    
+    // Hard threshold for crisp black/white hatching (no grays)
+    result = step(0.5, hatchInfluence);
+  }
 
-  // Sample the hand-drawn hatch texture (tiling)
-  vec3 hatchPattern = texture(u_hatchTex, hatchUV).rgb;
-
-  // ========== Toon Shader ==========
-  // Posterize luminance (simulates toon shading for 2D)
-  float toon = toonShade(lum, u_toonThreshold);
-  vec3 toonColor = vec3(toon);
-
-  // ========== Combining Tex with Toon (Linear Light) ==========
-  vec3 combined = linearLight(hatchPattern, toonColor);
-
-  // ========== Final Color Ramp ==========
-  // Threshold at ~0.373, black to white
-  float result = smoothstep(u_finalThreshold - 0.15, u_finalThreshold + 0.15, luminance(combined));
+  // ========== Apply Bold Outlines ==========
+  // Multiply by edge mask - edges become black lines
+  result *= edgeMask;
 
   outColor = vec4(vec3(result), 1.0);
 }
