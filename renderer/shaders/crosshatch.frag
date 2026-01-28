@@ -11,9 +11,10 @@ uniform vec2 u_centerPx;
 uniform float u_zoom;
 
 // Crosshatch controls (matching Blender nodes)
-uniform float u_hatchScale;      // Texture tiling scale (default 5.0)
-uniform float u_toonThreshold;   // Toon shader threshold (default 0.3)
-uniform float u_finalThreshold;  // Final color ramp threshold (default 0.373)
+uniform float u_hatchScale;      // Texture tiling scale (default 2.0)
+uniform float u_toonThreshold;   // Toon shader threshold (default 0.5)
+uniform float u_finalThreshold;  // Final color ramp threshold (default 0.3)
+uniform float u_brightness;      // Brightness/exposure adjustment (default 1.0)
 
 out vec4 outColor;
 
@@ -75,9 +76,9 @@ float detectEdges(sampler2D tex, vec2 uv, vec2 texSize) {
   // Calculate gradient magnitude
   float edgeStrength = sqrt(gx*gx + gy*gy);
   
-  // Normalize and apply moderate sensitivity for pen-sketch look
-  // Scale to reasonable range (tune this for desired edge strength)
-  return clamp(edgeStrength * 2.0, 0.0, 1.0);
+  // High sensitivity to catch subtle edges in bright areas (hands, faces)
+  // Scale to reasonable range (3.5 = catches low-contrast edges)
+  return clamp(edgeStrength * 3.5, 0.0, 1.0);
 }
 
 // ============================================
@@ -108,15 +109,20 @@ void main() {
   // Sample source image
   vec3 srcColor = texture(u_image, uv).rgb;
   float lum = luminance(srcColor);
+  
+  // Apply brightness adjustment before zone classification
+  // Allows lifting dark images into the mid-tone hatching range
+  lum = clamp(lum * u_brightness, 0.0, 1.0);
 
   // ========== Edge Detection ==========
   // Detect edges for bold comic-style outlines
   float edgeStrength = detectEdges(u_image, uv, u_texSize);
   
-  // Bold edge mask for comic contour lines (0.8 = strong outlines)
-  float edgeMask = 1.0 - (edgeStrength * 0.8);
-  // Hard threshold the edges for crisp lines
-  edgeMask = step(0.3, edgeMask);
+  // Bold edge mask for comic contour lines (0.85 = strong outlines)
+  float edgeMask = 1.0 - (edgeStrength * 0.85);
+  // Hard threshold for pure black lines (no gray - like brush pen)
+  // Strong edges become thick black, weak edges become thin black
+  edgeMask = step(0.15, edgeMask);
 
   // ========== Zone Classification ==========
   // Define luminance zones for comic book style:
@@ -124,7 +130,8 @@ void main() {
   // - Mid-tones: Apply hatching
   // - Shadows (dark): Solid black
   
-  float shadowThreshold = u_toonThreshold;      // ~0.3 default
+  // Add small buffer to shadow threshold to ensure clean solid blacks
+  float shadowThreshold = u_toonThreshold + 0.05;  // ~0.35 with buffer
   float highlightThreshold = 1.0 - u_finalThreshold; // ~0.627 default
   
   // ========== Hatch Texture (for mid-tones only) ==========

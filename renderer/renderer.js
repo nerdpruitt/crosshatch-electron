@@ -52,7 +52,35 @@ function createTilingTexture(gl, img) {
   return tex;
 }
 
+// Passthrough fragment shader for displaying original image
+const PASSTHROUGH_FRAG = `#version 300 es
+precision highp float;
+
+uniform sampler2D u_image;
+uniform vec2 u_texSize;
+uniform vec2 u_outSize;
+uniform vec2 u_centerPx;
+uniform float u_zoom;
+
+out vec4 outColor;
+
+void main() {
+  vec2 fragPx = gl_FragCoord.xy;
+  vec2 outCenter = 0.5 * u_outSize;
+  vec2 imagePx = (fragPx - outCenter) / max(u_zoom, 1e-6) + u_centerPx;
+  vec2 uv = imagePx / u_texSize;
+
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    outColor = vec4(0.95, 0.95, 0.95, 1.0); // Light gray background
+    return;
+  }
+
+  outColor = texture(u_image, uv);
+}
+`;
+
 async function main() {
+  // === Processed canvas (right side / main) ===
   const canvas = document.getElementById("gl");
   const gl = createGL(canvas);
 
@@ -81,13 +109,34 @@ async function main() {
 
     // Crosshatch controls (from Blender nodes)
     hatchScale: U("u_hatchScale"), // Texture tiling scale
-    toonThreshold: U("u_toonThreshold"), // Toon Color Ramp threshold (0.3)
-    finalThreshold: U("u_finalThreshold"), // Final Color Ramp threshold (0.373)
+    toonThreshold: U("u_toonThreshold"), // Toon Color Ramp threshold (0.5)
+    finalThreshold: U("u_finalThreshold"), // Final Color Ramp threshold (0.3)
+    brightness: U("u_brightness"), // Brightness/exposure (default 1.0)
+  };
+
+  // === Original canvas (left side for compare mode) ===
+  const canvasOriginal = document.getElementById("glOriginal");
+  const glOrig = createGL(canvasOriginal);
+  const progOrig = createProgram(glOrig, vsSrc, PASSTHROUGH_FRAG);
+  const quadOrig = createFullscreenQuad(glOrig);
+
+  const uOrig = {
+    image: glOrig.getUniformLocation(progOrig, "u_image"),
+    texSize: glOrig.getUniformLocation(progOrig, "u_texSize"),
+    outSize: glOrig.getUniformLocation(progOrig, "u_outSize"),
+    centerPx: glOrig.getUniformLocation(progOrig, "u_centerPx"),
+    zoom: glOrig.getUniformLocation(progOrig, "u_zoom"),
   };
 
   let srcTex = null;
+  let srcTexOrig = null; // Texture for original canvas
   let srcW = 0,
     srcH = 0;
+
+  // Compare mode state
+  let compareMode = false;
+  const wrap = document.getElementById("wrap");
+  const btnCompare = document.getElementById("btnCompare");
 
   // Camera (view)
   let viewCenter = { x: 0, y: 0 }; // image pixels
@@ -125,6 +174,7 @@ async function main() {
   const btnOneToOne = document.getElementById("btnOneToOne");
 
   // Sliders mapped to Blender parameters
+  const brightnessEl = document.getElementById("brightness"); // Brightness/exposure
   const scaleEl = document.getElementById("flow"); // Hatch texture scale
   const toonEl = document.getElementById("edge"); // Toon threshold
   const threshEl = document.getElementById("contrast"); // Final threshold
@@ -132,10 +182,11 @@ async function main() {
   function setDefaults() {
     gl.useProgram(prog);
 
-    // Blender shader defaults
-    gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 5.0));
-    gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.3));
-    gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.373));
+    // Shader defaults
+    gl.uniform1f(u.brightness, parseFloat(brightnessEl?.value ?? 1.0));
+    gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 2.0));
+    gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.5));
+    gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.3));
   }
 
   function renderToTarget(targetFboOrNull, outW, outH) {
@@ -177,18 +228,52 @@ async function main() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  // Render original image (passthrough shader)
+  function renderOriginal(outW, outH) {
+    if (!srcTexOrig) return;
+
+    glOrig.useProgram(progOrig);
+    glOrig.bindVertexArray(quadOrig.vao);
+    glOrig.bindFramebuffer(glOrig.FRAMEBUFFER, null);
+
+    glOrig.viewport(0, 0, outW, outH);
+    glOrig.disable(glOrig.DEPTH_TEST);
+    glOrig.disable(glOrig.BLEND);
+
+    glOrig.activeTexture(glOrig.TEXTURE0);
+    glOrig.bindTexture(glOrig.TEXTURE_2D, srcTexOrig);
+    glOrig.uniform1i(uOrig.image, 0);
+
+    glOrig.uniform2f(uOrig.texSize, srcW, srcH);
+    glOrig.uniform2f(uOrig.outSize, outW, outH);
+    glOrig.uniform2f(uOrig.centerPx, viewCenter.x, viewCenter.y);
+    glOrig.uniform1f(uOrig.zoom, viewZoom);
+
+    glOrig.drawArrays(glOrig.TRIANGLES, 0, quadOrig.vertexCount);
+
+    glOrig.bindTexture(glOrig.TEXTURE_2D, null);
+    glOrig.bindVertexArray(null);
+  }
+
   function frame() {
     const changed = resizeCanvasToDisplaySize(canvas);
 
     if (srcTex) {
       // Update slider-driven uniforms live
       gl.useProgram(prog);
-      gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 5.0));
-      gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.3));
-      gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.373));
+      gl.uniform1f(u.brightness, parseFloat(brightnessEl?.value ?? 1.0));
+      gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 2.0));
+      gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.5));
+      gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.3));
     }
 
     if (changed || srcTex) renderToTarget(null, canvas.width, canvas.height);
+
+    // Render original canvas when in compare mode
+    if (compareMode && srcTexOrig) {
+      resizeCanvasToDisplaySize(canvasOriginal);
+      renderOriginal(canvasOriginal.width, canvasOriginal.height);
+    }
 
     requestAnimationFrame(frame);
   }
@@ -202,17 +287,20 @@ async function main() {
     return img;
   }
 
-  // Pan
+  // Pan (works on both canvases)
   let isPanning = false;
   let lastX = 0,
     lastY = 0;
 
-  canvas.addEventListener("mousedown", (e) => {
+  function handleMouseDown(e) {
     if (!srcTex) return;
     isPanning = true;
     lastX = e.clientX;
     lastY = e.clientY;
-  });
+  }
+
+  canvas.addEventListener("mousedown", handleMouseDown);
+  canvasOriginal.addEventListener("mousedown", handleMouseDown);
 
   window.addEventListener("mouseup", () => {
     isPanning = false;
@@ -230,36 +318,36 @@ async function main() {
     viewCenter.y -= dy / viewZoom;
   });
 
-  // Zoom around cursor
-  canvas.addEventListener(
-    "wheel",
-    (e) => {
-      if (!srcTex) return;
-      e.preventDefault();
+  // Zoom around cursor (works on both canvases)
+  function handleWheel(e) {
+    if (!srcTex) return;
+    e.preventDefault();
 
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
+    const targetCanvas = e.currentTarget;
+    const rect = targetCanvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
 
-      const sx = (e.clientX - rect.left) * dpr;
-      const sy = (e.clientY - rect.top) * dpr;
+    const sx = (e.clientX - rect.left) * dpr;
+    const sy = (e.clientY - rect.top) * dpr;
 
-      const outW = canvas.width;
-      const outH = canvas.height;
+    const outW = targetCanvas.width;
+    const outH = targetCanvas.height;
 
-      const before = screenPxToImagePx(sx, sy, outW, outH);
+    const before = screenPxToImagePx(sx, sy, outW, outH);
 
-      const zoomFactor = Math.exp(-e.deltaY * 0.0015);
-      const newZoom = Math.min(20.0, Math.max(0.05, viewZoom * zoomFactor));
+    const zoomFactor = Math.exp(-e.deltaY * 0.0015);
+    const newZoom = Math.min(20.0, Math.max(0.05, viewZoom * zoomFactor));
 
-      const outCenterX = outW * 0.5;
-      const outCenterY = outH * 0.5;
+    const outCenterX = outW * 0.5;
+    const outCenterY = outH * 0.5;
 
-      viewZoom = newZoom;
-      viewCenter.x = before.x - (sx - outCenterX) / viewZoom;
-      viewCenter.y = before.y - (sy - outCenterY) / viewZoom;
-    },
-    { passive: false }
-  );
+    viewZoom = newZoom;
+    viewCenter.x = before.x - (sx - outCenterX) / viewZoom;
+    viewCenter.y = before.y - (sy - outCenterY) / viewZoom;
+  }
+
+  canvas.addEventListener("wheel", handleWheel, { passive: false });
+  canvasOriginal.addEventListener("wheel", handleWheel, { passive: false });
 
   // Buttons
   btnFit?.addEventListener("click", () =>
@@ -267,20 +355,42 @@ async function main() {
   );
   btnOneToOne?.addEventListener("click", () => oneToOne());
 
+  // Compare toggle button
+  btnCompare?.addEventListener("click", () => {
+    compareMode = !compareMode;
+    wrap.classList.toggle("compare-mode", compareMode);
+    btnCompare.classList.toggle("active", compareMode);
+    
+    // Trigger resize after layout change
+    setTimeout(() => {
+      resizeCanvasToDisplaySize(canvas);
+      if (compareMode) {
+        resizeCanvasToDisplaySize(canvasOriginal);
+      }
+    }, 50);
+  });
+
   btnOpen?.addEventListener("click", async () => {
     const filePath = await window.api.pickImage();
     if (!filePath) return;
 
     const img = await loadImageFromPath(filePath);
 
+    // Create texture for processed canvas
     if (srcTex) gl.deleteTexture(srcTex);
     srcTex = createTextureFromImage(gl, img);
+
+    // Create texture for original canvas
+    if (srcTexOrig) glOrig.deleteTexture(srcTexOrig);
+    srcTexOrig = createTextureFromImage(glOrig, img);
+
     srcW = img.naturalWidth;
     srcH = img.naturalHeight;
 
     if (btnExport) btnExport.disabled = false;
     if (btnFit) btnFit.disabled = false;
     if (btnOneToOne) btnOneToOne.disabled = false;
+    if (btnCompare) btnCompare.disabled = false;
 
     setDefaults();
     fitToView(canvas.width, canvas.height);
@@ -340,6 +450,7 @@ async function main() {
 
   // Cleanup GL resources on window close
   window.addEventListener("beforeunload", () => {
+    // Processed canvas cleanup
     if (srcTex) {
       gl.deleteTexture(srcTex);
       srcTex = null;
@@ -348,6 +459,15 @@ async function main() {
     if (quad.vao) gl.deleteVertexArray(quad.vao);
     if (quad.vbo) gl.deleteBuffer(quad.vbo);
     gl.deleteProgram(prog);
+
+    // Original canvas cleanup
+    if (srcTexOrig) {
+      glOrig.deleteTexture(srcTexOrig);
+      srcTexOrig = null;
+    }
+    if (quadOrig.vao) glOrig.deleteVertexArray(quadOrig.vao);
+    if (quadOrig.vbo) glOrig.deleteBuffer(quadOrig.vbo);
+    glOrig.deleteProgram(progOrig);
   });
 
   setDefaults();
