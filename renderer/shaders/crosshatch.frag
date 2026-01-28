@@ -15,6 +15,8 @@ uniform float u_hatchScale;      // Texture tiling scale (default 2.0)
 uniform float u_toonThreshold;   // Toon shader threshold (default 0.5)
 uniform float u_finalThreshold;  // Final color ramp threshold (default 0.3)
 uniform float u_brightness;      // Brightness/exposure adjustment (default 1.0)
+uniform float u_hatchAmount;     // Hatching amount 0=clean posterization, 1=full hatching
+uniform float u_edgeStrength;    // Edge detection strength 0=none, 1=normal, 2=strong
 
 out vec4 outColor;
 
@@ -118,6 +120,9 @@ void main() {
   // Detect edges for bold comic-style outlines
   float edgeStrength = detectEdges(u_image, uv, u_texSize);
   
+  // Apply user-controlled edge strength multiplier
+  edgeStrength *= u_edgeStrength;
+  
   // Bold edge mask for comic contour lines (0.85 = strong outlines)
   float edgeMask = 1.0 - (edgeStrength * 0.85);
   // Hard threshold for pure black lines (no gray - like brush pen)
@@ -153,16 +158,19 @@ void main() {
     result = 1.0;
   } 
   else {
-    // MID-TONES: Apply hatching
+    // MID-TONES: Apply hatching (or clean posterization)
     // Map luminance within mid-tone range to 0-1
     float midTonePos = (lum - shadowThreshold) / (highlightThreshold - shadowThreshold);
     
-    // Combine luminance position with hatch texture
-    // Darker mid-tones get more hatching, lighter get less
-    float hatchInfluence = hatchValue + midTonePos;
+    // Pure posterization - clean black/white based on luminance position
+    float pureResult = step(0.5, midTonePos);
     
-    // Hard threshold for crisp black/white hatching (no grays)
-    result = step(0.5, hatchInfluence);
+    // Texture-based hatching - combines luminance with hatch texture
+    float hatchInfluence = hatchValue + midTonePos;
+    float textureResult = step(0.5, hatchInfluence);
+    
+    // Blend between pure posterization and textured hatching
+    result = mix(pureResult, textureResult, u_hatchAmount);
   }
 
   // ========== Apply Bold Outlines ==========

@@ -112,6 +112,8 @@ async function main() {
     toonThreshold: U("u_toonThreshold"), // Toon Color Ramp threshold (0.5)
     finalThreshold: U("u_finalThreshold"), // Final Color Ramp threshold (0.3)
     brightness: U("u_brightness"), // Brightness/exposure (default 1.0)
+    hatchAmount: U("u_hatchAmount"), // Hatching amount (default 1.0)
+    edgeStrength: U("u_edgeStrength"), // Edge strength (default 1.0)
   };
 
   // === Original canvas (left side for compare mode) ===
@@ -176,6 +178,8 @@ async function main() {
   // Sliders mapped to Blender parameters
   const brightnessEl = document.getElementById("brightness"); // Brightness/exposure
   const scaleEl = document.getElementById("flow"); // Hatch texture scale
+  const hatchingEl = document.getElementById("hatching"); // Hatching amount
+  const edgesEl = document.getElementById("edges"); // Edge strength
   const toonEl = document.getElementById("edge"); // Toon threshold
   const threshEl = document.getElementById("contrast"); // Final threshold
 
@@ -185,6 +189,8 @@ async function main() {
     // Shader defaults
     gl.uniform1f(u.brightness, parseFloat(brightnessEl?.value ?? 1.0));
     gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 2.0));
+    gl.uniform1f(u.hatchAmount, parseFloat(hatchingEl?.value ?? 1.0));
+    gl.uniform1f(u.edgeStrength, parseFloat(edgesEl?.value ?? 1.0));
     gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.5));
     gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.3));
   }
@@ -263,6 +269,8 @@ async function main() {
       gl.useProgram(prog);
       gl.uniform1f(u.brightness, parseFloat(brightnessEl?.value ?? 1.0));
       gl.uniform1f(u.hatchScale, parseFloat(scaleEl?.value ?? 2.0));
+      gl.uniform1f(u.hatchAmount, parseFloat(hatchingEl?.value ?? 1.0));
+      gl.uniform1f(u.edgeStrength, parseFloat(edgesEl?.value ?? 1.0));
       gl.uniform1f(u.toonThreshold, parseFloat(toonEl?.value ?? 0.5));
       gl.uniform1f(u.finalThreshold, parseFloat(threshEl?.value ?? 0.3));
     }
